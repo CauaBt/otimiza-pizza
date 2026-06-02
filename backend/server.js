@@ -2,12 +2,17 @@ const express = require('express');
 const cors = require('cors');
 const db = require('./db');
 require('dotenv').config();
+const path = require('path');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
+
+// Serve frontend static files when deployed as single service
+const frontendDist = path.join(__dirname, '..', 'frontend', 'dist');
+app.use(express.static(frontendDist));
 
 async function initDb() {
   // create schema
@@ -267,5 +272,11 @@ app.post('/api/solve', async (req, res) => {
 
 // start server after init
 initDb().then(()=>{
+  // Fallback: serve index.html for any non-API route (Vue Router history mode)
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/')) return next();
+    res.sendFile(path.join(frontendDist, 'index.html'));
+  });
+
   app.listen(PORT, ()=> console.log(`Server running on port ${PORT}`));
 }).catch(err=>{ console.error('Failed to init DB', err); process.exit(1); });
