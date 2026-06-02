@@ -5,7 +5,7 @@
       <div class="logo-area">
         <Pizza class="logo-icon text-primary" />
         <div class="logo-text">
-          <h1>SliceOptima</h1>
+          <h1>Otimiza Pizza</h1>
           <p>Simulador de Produção de Pizzas</p>
         </div>
       </div>
