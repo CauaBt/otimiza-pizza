@@ -1,4 +1,4 @@
-# SliceOptima 🍕 — Otimizador de Produção de Pizzas
+# Otimiza Pizza 🍕 — Otimizador de Produção de Pizzas
 
 Este projeto consiste em uma aplicação web interativa de alto padrão visual (Premium Dashboard) projetada para modelar, resolver e visualizar o problema de programação linear para maximização de lucros na fabricação de pizzas.
 

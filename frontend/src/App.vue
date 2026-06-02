@@ -376,7 +376,7 @@
 </template>
 
 <script>
-import { ref, reactive, computed } from 'vue';
+import { ref, reactive, computed, onMounted } from 'vue';
 import { 
   Pizza, 
   Sliders, 
@@ -419,38 +419,44 @@ export default {
     const productionHistory = ref([]);
     const successMessage = ref('');
 
-    // Stocks available (initial values)
-    const stocks = reactive({
-      farinha: 150,
-      manteiga: 25,
-      queijo: 50,
-      molho: 160,
-      calabresa: 30
-    });
+    // Reactive containers will be populated from the backend
+    const stocks = reactive({});
 
-    // Recipes (how much of each ingredient is required per pizza)
-    const recipes = reactive({
-      pizza1: { // Muçarela
-        farinha: 0.5,
-        manteiga: 0.2,
-        queijo: 0.3,
-        molho: 0.2,
-        calabresa: 0.0
-      },
-      pizza2: { // Calabresa
-        farinha: 0.5,
-        manteiga: 0.2,
-        queijo: 0.2,
-        molho: 0.2,
-        calabresa: 0.15
-      }
-    });
+    const recipes = reactive({ pizza1: {}, pizza2: {} });
 
     // Profit per unit of pizza
-    const profits = reactive({
-      pizza1: 12.00,
-      pizza2: 15.00
-    });
+    const profits = reactive({ pizza1: 12.00, pizza2: 15.00 });
+
+    // Load initial state from backend
+    const loadState = async () => {
+      try {
+        const res = await fetch('/api/state');
+        if (!res.ok) {
+          console.error('Failed to load state');
+          return;
+        }
+        const json = await res.json();
+        if (!json.success) return;
+        // populate stocks
+        Object.keys(json.stocks || {}).forEach(k => stocks[k] = json.stocks[k]);
+        // populate recipes
+        if (json.recipes) {
+          recipes.pizza1 = json.recipes.pizza1 || {};
+          recipes.pizza2 = json.recipes.pizza2 || {};
+        }
+        // populate profits
+        if (json.profits) {
+          Object.keys(json.profits).forEach(k => profits[k] = json.profits[k]);
+        }
+        // populate history
+        productionHistory.value = (json.productionHistory || []).map(h => ({ id: h.id, timestamp: h.timestamp, pizza: h.pizza, quantity: Number(h.quantity), consumed: h.consumed }));
+      } catch (err) {
+        console.error('Error loading state', err);
+      }
+    };
+
+    onMounted(loadState);
+
 
     const simProfit = computed(() => {
       return (simQty.pizza1 * profits.pizza1) + (simQty.pizza2 * profits.pizza2);
@@ -526,7 +532,7 @@ export default {
       return key === 'pizza2' ? 'Pizza Calabresa' : 'Pizza Muçarela';
     };
 
-    const producePizza = () => {
+    const producePizza = async () => {
       const quantity = Number(production.quantity) || 0;
       if (quantity <= 0) {
         successMessage.value = '';
@@ -538,26 +544,40 @@ export default {
         return;
       }
 
-      const pizzaLabel = pizzaName(production.pizza);
-      // Deduct inventory and record history without browser confirmation popup
-      const consumed = {};
-      for (const [ing, item] of Object.entries(productionPreview.value)) {
-        consumed[ing] = item.required;
-        stocks[ing] = Number(Math.max(0, stocks[ing] - item.required).toFixed(2));
+      try {
+        const resp = await fetch('/api/produce', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pizza: production.pizza, quantity })
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.success) {
+          successMessage.value = data.message || 'Erro ao produzir';
+          return;
+        }
+
+        // update stocks from server
+        Object.entries(data.stocks || {}).forEach(([k, v]) => {
+          stocks[k] = v;
+        });
+
+        // prepend production record
+        productionHistory.value.unshift({
+          id: data.production.id || Date.now(),
+          timestamp: data.production.timestamp || new Date().toISOString(),
+          pizza: data.production.pizza,
+          quantity: data.production.quantity,
+          consumed: data.production.consumed
+        });
+
+        const pizzaLabel = pizzaName(production.pizza);
+        successMessage.value = `Produção de ${quantity} ${pizzaLabel} concluída. Estoque atualizado.`;
+        setTimeout(() => { successMessage.value = ''; }, 5000);
+
+      } catch (err) {
+        console.error(err);
+        successMessage.value = 'Erro de produção';
       }
-
-      productionHistory.value.unshift({
-        id: Date.now(),
-        timestamp: new Date().toISOString(),
-        pizza: production.pizza,
-        quantity,
-        consumed
-      });
-
-      successMessage.value = `Produção de ${quantity} ${pizzaLabel} concluída. Estoque atualizado.`;
-      setTimeout(() => {
-        successMessage.value = '';
-      }, 5000);
     };
 
     const isLastConsumed = (consumed, key) => {
