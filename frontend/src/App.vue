@@ -430,7 +430,8 @@ export default {
     // Load initial state from backend
     const loadState = async () => {
       try {
-        const res = await fetch('/api/state');
+        const API_URL = 'https://otimiza-pizza-7ig8.onrender.com';
+        const res = await fetch(`${API_URL}/api/state`);
         if (!res.ok) {
           console.error('Failed to load state');
           return;
@@ -545,10 +546,13 @@ export default {
       }
 
       try {
-        const resp = await fetch('/api/produce', {
+        const resp = await fetch(`${API_URL}/api/produce`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pizza: production.pizza, quantity })
+          body: JSON.stringify({
+            pizza: production.pizza,
+            quantity
+          })
         });
         const data = await resp.json();
         if (!resp.ok || !data.success) {
