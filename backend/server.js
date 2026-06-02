@@ -1,7 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const db = require('./db');
-require('dotenv').config();
 const path = require('path');
 
 const app = express();
@@ -14,127 +12,85 @@ const PORT = process.env.PORT || 10000;
 const frontendDist = path.join(__dirname, '..', 'frontend', 'dist');
 app.use(express.static(frontendDist));
 
-async function initDb() {
-  // create schema
-  const sql = require('fs').readFileSync(__dirname + '/migrations.sql', 'utf8');
-  await db.query(sql);
+// In-memory storage (resets on server restart)
+const ingredients = {
+  farinha: 150,
+  manteiga: 25,
+  queijo: 50,
+  molho: 160,
+  calabresa: 30
+};
 
-  // insert default ingredients if missing
-  const { rows } = await db.query('SELECT COUNT(*)::int AS cnt FROM ingredients');
-  if (rows[0].cnt === 0) {
-    // default seed values (from existing frontend defaults)
-    const defaultIngredients = {
-      farinha: 150,
-      manteiga: 25,
-      queijo: 50,
-      molho: 160,
-      calabresa: 30
-    };
+const recipes = {
+  pizza1: { farinha: 0.5, manteiga: 0.2, queijo: 0.3, molho: 0.2, calabresa: 0.0 },
+  pizza2: { farinha: 0.5, manteiga: 0.2, queijo: 0.2, molho: 0.2, calabresa: 0.15 }
+};
 
-    for (const [name, stock] of Object.entries(defaultIngredients)) {
-      await db.query('INSERT INTO ingredients(name, stock) VALUES($1, $2)', [name, stock]);
-    }
+const profits = { pizza1: 12.0, pizza2: 15.0 };
 
-    // default recipes
-    const recipes = {
-      pizza1: { farinha: 0.5, manteiga: 0.2, queijo: 0.3, molho: 0.2, calabresa: 0.0 },
-      pizza2: { farinha: 0.5, manteiga: 0.2, queijo: 0.2, molho: 0.2, calabresa: 0.15 }
-    };
+let productionHistory = [];
+let nextHistoryId = 1;
 
-    for (const [pizza, ingmap] of Object.entries(recipes)) {
-      for (const [ing, amount] of Object.entries(ingmap)) {
-        await db.query('INSERT INTO recipes(pizza, ingredient, amount) VALUES($1, $2, $3)', [pizza, ing, amount]);
-      }
-    }
-
-    // default profits
-    await db.query('INSERT INTO profits(pizza, profit) VALUES($1, $2)', ['pizza1', 12.00]);
-    await db.query('INSERT INTO profits(pizza, profit) VALUES($1, $2)', ['pizza2', 15.00]);
-  }
-}
+// No DB initialization required for in-memory storage
 
 // Utility: read full state
-app.get('/api/state', async (req, res) => {
+app.get('/api/state', (req, res) => {
   try {
-    const ingredientsR = await db.query('SELECT name, stock FROM ingredients');
-    const recipesR = await db.query('SELECT pizza, ingredient, amount FROM recipes');
-    const profitsR = await db.query('SELECT pizza, profit FROM profits');
-    const historyR = await db.query('SELECT id, timestamp, pizza, quantity, consumed FROM production_history ORDER BY timestamp DESC LIMIT 200');
+    // Return the current in-memory state
+    const stocksOut = {};
+    Object.entries(ingredients).forEach(([k, v]) => stocksOut[k] = Number(v));
 
-    const stocks = {};
-    ingredientsR.rows.forEach(r => stocks[r.name] = Number(r.stock));
+    const recipesOut = { pizza1: {}, pizza2: {} };
+    Object.entries(recipes.pizza1 || {}).forEach(([k, v]) => recipesOut.pizza1[k] = Number(v));
+    Object.entries(recipes.pizza2 || {}).forEach(([k, v]) => recipesOut.pizza2[k] = Number(v));
 
-    const recipes = {};
-    recipesR.rows.forEach(r => {
-      recipes[r.pizza] = recipes[r.pizza] || {};
-      recipes[r.pizza][r.ingredient] = Number(r.amount);
-    });
+    const profitsOut = { pizza1: Number(profits.pizza1), pizza2: Number(profits.pizza2) };
 
-    const profits = {};
-    profitsR.rows.forEach(r => profits[r.pizza] = Number(r.profit));
-
-    res.json({ success: true, stocks, recipes, profits, productionHistory: historyR.rows });
-
+    res.json({ success: true, stocks: stocksOut, recipes: recipesOut, profits: profitsOut, productionHistory: productionHistory.slice().reverse() });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, message: 'DB error' });
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
 // POST /api/produce
-app.post('/api/produce', async (req, res) => {
-  const { pizza, quantity } = req.body || {};
-  const qty = Number(quantity) || 0;
-  if (!pizza || qty <= 0) return res.status(400).json({ success: false, message: 'Invalid pizza or quantity' });
-
-  const client = await db.getClient();
+app.post('/api/produce', (req, res) => {
   try {
-    await client.query('BEGIN');
+    const { pizza, quantity } = req.body || {};
+    const qty = Number(quantity) || 0;
+    if (!pizza || qty <= 0) return res.status(400).json({ success: false, message: 'Invalid pizza or quantity' });
 
-    // load recipe
-    const recipeRes = await client.query('SELECT ingredient, amount FROM recipes WHERE pizza=$1', [pizza]);
-    const recipe = {};
-    recipeRes.rows.forEach(r => recipe[r.ingredient] = Number(r.amount));
+    // load recipe from memory
+    const recipe = recipes[pizza] || {};
 
-    // load current stocks
-    const ingRes = await client.query('SELECT name, stock FROM ingredients FOR UPDATE');
-    const stocks = {};
-    ingRes.rows.forEach(r => stocks[r.name] = Number(r.stock));
-
-    // compute required
+    // compute required and validate
     const consumed = {};
-    for (const ing of Object.keys(stocks)) {
+    for (const ing of Object.keys(ingredients)) {
       const requiredPerUnit = recipe[ing] || 0;
       const required = Number((requiredPerUnit * qty).toFixed(2));
       consumed[ing] = required;
-      if (required > stocks[ing]) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ success: false, message: `Insufficient ${ing}`, missing: required - stocks[ing] });
+      if (required > ingredients[ing]) {
+        return res.status(400).json({ success: false, message: `Insufficient ${ing}`, missing: Number((required - ingredients[ing]).toFixed(2)) });
       }
     }
 
     // deduct
     for (const [ing, req] of Object.entries(consumed)) {
-      await client.query('UPDATE ingredients SET stock = stock - $1 WHERE name = $2', [req, ing]);
+      ingredients[ing] = Number((ingredients[ing] - req).toFixed(2));
     }
 
-    // insert history
-    const insertRes = await client.query('INSERT INTO production_history(pizza, quantity, consumed) VALUES($1, $2, $3) RETURNING id, timestamp', [pizza, qty, consumed]);
-    await client.query('COMMIT');
+    // insert history (in-memory)
+    const record = { id: nextHistoryId++, timestamp: new Date().toISOString(), pizza, quantity: qty, consumed };
+    productionHistory.push(record);
 
     // return updated state
-    const updatedIngs = await db.query('SELECT name, stock FROM ingredients');
     const stocksOut = {};
-    updatedIngs.rows.forEach(r => stocksOut[r.name] = Number(r.stock));
+    Object.entries(ingredients).forEach(([k, v]) => stocksOut[k] = Number(v));
 
-    res.json({ success: true, production: { id: insertRes.rows[0].id, timestamp: insertRes.rows[0].timestamp, pizza, quantity: qty, consumed }, stocks: stocksOut });
-
+    res.json({ success: true, production: record, stocks: stocksOut });
   } catch (err) {
-    await client.query('ROLLBACK');
     console.error(err);
     res.status(500).json({ success: false, message: 'Production failed' });
-  } finally {
-    client.release();
   }
 });
 
@@ -270,13 +226,11 @@ app.post('/api/solve', async (req, res) => {
   }
 });
 
-// start server after init
-initDb().then(()=>{
-  // Fallback: serve index.html for any non-API route (Vue Router history mode)
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api/')) return next();
-    res.sendFile(path.join(frontendDist, 'index.html'));
-  });
+// Fallback: serve index.html for any non-API route (Vue Router history mode)
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api/')) return next();
+  res.sendFile(path.join(frontendDist, 'index.html'));
+});
 
-  app.listen(PORT, ()=> console.log(`Server running on port ${PORT}`));
-}).catch(err=>{ console.error('Failed to init DB', err); process.exit(1); });
+// Start server
+app.listen(PORT, ()=> console.log(`Server running on port ${PORT}`));
